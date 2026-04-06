@@ -243,6 +243,13 @@ def restore_full_proba(local_proba, local_to_label, num_global_classes=NUM_GLOBA
     return full_proba
 
 
+def restore_sklearn_proba_to_full(model, raw_proba, num_global_classes=NUM_GLOBAL_CLASSES):
+    full_proba = np.zeros((raw_proba.shape[0], num_global_classes))
+    for i, cls in enumerate(model.classes_):
+        full_proba[:, int(cls)] = raw_proba[:, i]
+    return full_proba
+
+
 def get_recent_slice(df_features, window_size):
     if len(df_features) <= window_size:
         return df_features.copy()
@@ -259,6 +266,7 @@ def calc_streak_zero(hit_list):
         else:
             cur = 0
     return max_streak
+
 
 # =========================
 # 模型
@@ -341,8 +349,22 @@ def get_model_proba(model_info, X, num_global_classes=NUM_GLOBAL_CLASSES):
     if model_info["type"] == "xgb":
         local_proba = model_info["model"].predict_proba(X.values)
         return restore_full_proba(local_proba, model_info["local_to_label"], num_global_classes)
+
+    elif model_info["type"] == "rf":
+        raw_proba = model_info["model"].predict_proba(X.values)
+        return restore_sklearn_proba_to_full(
+            model_info["model"],
+            raw_proba,
+            num_global_classes=num_global_classes
+        )
+
     else:
-        return model_info["model"].predict_proba(X.values)
+        raw_proba = model_info["model"].predict_proba(X.values)
+        return restore_sklearn_proba_to_full(
+            model_info["model"],
+            raw_proba,
+            num_global_classes=num_global_classes
+        )
 
 
 def evaluate_model(model_info, X_valid, y_valid, topk=4):
@@ -384,6 +406,7 @@ def ensemble_predict_proba(models_with_weights, X, num_global_classes=NUM_GLOBAL
 
     final_proba /= total_weight
     return final_proba
+
 
 # =========================
 # 稳定版 Pro++ 组件
@@ -484,10 +507,11 @@ def get_all_probs_df(proba_row, zodiac_encoder):
         })
     return pd.DataFrame(rows)
 
+
 # =========================
 # 轻量动态优化
 # =========================
-def simple_backtest_score(df_features, feature_cols, zodiac_encoder, window_size, xgb_weight, rf_weight, eval_last_n=30):
+def simple_backtest_score(df_features, feature_cols, zodiac_encoder, window_size, xgb_weight, rf_weight, eval_last_n=30, freq_window=20):
     sub_df = get_recent_slice(df_features, window_size)
 
     if len(sub_df) < max(60, eval_last_n + 20):
@@ -527,8 +551,8 @@ def simple_backtest_score(df_features, feature_cols, zodiac_encoder, window_size
 
         model_proba = ensemble_predict_proba(models_with_weights, X_test)[0]
 
-        freq_proba = get_recent_frequency_proba(train_df, window_size=20, num_classes=NUM_GLOBAL_CLASSES)
-        hotcold_score = get_hot_cold_score(train_df, window_size=20, num_classes=NUM_GLOBAL_CLASSES)
+        freq_proba = get_recent_frequency_proba(train_df, window_size=freq_window, num_classes=NUM_GLOBAL_CLASSES)
+        hotcold_score = get_hot_cold_score(train_df, window_size=freq_window, num_classes=NUM_GLOBAL_CLASSES)
 
         proba = build_stable_final_proba(
             model_proba=model_proba,
@@ -570,7 +594,7 @@ def simple_backtest_score(df_features, feature_cols, zodiac_encoder, window_size
     }
 
 
-def find_best_dynamic_config(df_features, feature_cols, zodiac_encoder, eval_last_n=30):
+def find_best_dynamic_config(df_features, feature_cols, zodiac_encoder, eval_last_n=30, freq_window=20):
     candidate_windows = [80, 100, 120, 150]
     candidate_weights = [
         (0.7, 0.3),
@@ -603,7 +627,8 @@ def find_best_dynamic_config(df_features, feature_cols, zodiac_encoder, eval_las
                 window_size=w,
                 xgb_weight=xgb_w,
                 rf_weight=rf_w,
-                eval_last_n=eval_last_n
+                eval_last_n=eval_last_n,
+                freq_window=freq_window
             )
             if result is not None:
                 all_scores.append(result)
@@ -623,7 +648,7 @@ def find_best_dynamic_config(df_features, feature_cols, zodiac_encoder, eval_las
     return best, score_df
 
 
-def run_recent_monitor(df_features, feature_cols, zodiac_encoder, best_window, best_xgb_weight, best_rf_weight, eval_last_n=30):
+def run_recent_monitor(df_features, feature_cols, zodiac_encoder, best_window, best_xgb_weight, best_rf_weight, eval_last_n=30, freq_window=20, strategy_topn=4):
     sub_df = get_recent_slice(df_features, best_window)
 
     records = []
@@ -660,8 +685,8 @@ def run_recent_monitor(df_features, feature_cols, zodiac_encoder, best_window, b
 
         model_proba = ensemble_predict_proba(models_with_weights, X_test)[0]
 
-        freq_proba = get_recent_frequency_proba(train_df, window_size=20, num_classes=NUM_GLOBAL_CLASSES)
-        hotcold_score = get_hot_cold_score(train_df, window_size=20, num_classes=NUM_GLOBAL_CLASSES)
+        freq_proba = get_recent_frequency_proba(train_df, window_size=freq_window, num_classes=NUM_GLOBAL_CLASSES)
+        hotcold_score = get_hot_cold_score(train_df, window_size=freq_window, num_classes=NUM_GLOBAL_CLASSES)
 
         proba = build_stable_final_proba(
             model_proba=model_proba,
@@ -672,11 +697,6 @@ def run_recent_monitor(df_features, feature_cols, zodiac_encoder, best_window, b
         )
 
         pred_top1 = int(np.argmax(proba))
-        strategy_state = decide_strategy_state(
-            recent_top4=float(train_df["特码生肖"].tail(20).isin(np.argsort(proba)[::-1][:4]).mean()) if len(train_df) > 0 else 0.0,
-            max_zero_streak=0
-        )
-        strategy_topn = get_strategy_topn(strategy_state)
         pred_topn = list(np.argsort(proba)[::-1][:strategy_topn])
 
         actual_name = zodiac_encoder.classes_[y_test]
@@ -695,6 +715,7 @@ def run_recent_monitor(df_features, feature_cols, zodiac_encoder, best_window, b
         })
 
     return pd.DataFrame(records)
+
 
 # =========================
 # 侧边栏
@@ -738,7 +759,8 @@ if uploaded_file is not None:
             df_features=df_features,
             feature_cols=feature_cols,
             zodiac_encoder=zodiac_encoder,
-            eval_last_n=eval_last_n
+            eval_last_n=eval_last_n,
+            freq_window=freq_window
         )
 
         if best_config is None or score_df is None or len(score_df) == 0:
@@ -886,7 +908,9 @@ if uploaded_file is not None:
             best_window=best_window,
             best_xgb_weight=best_xgb_weight,
             best_rf_weight=best_rf_weight,
-            eval_last_n=eval_last_n
+            eval_last_n=eval_last_n,
+            freq_window=freq_window,
+            strategy_topn=strategy_topn
         )
 
         if len(monitor_df) > 0:
