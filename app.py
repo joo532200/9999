@@ -15,7 +15,6 @@ from sklearn.preprocessing import LabelEncoder
 # Streamlit / Railway 基础设置
 # =========================
 st.set_page_config(page_title="特肖预测系统 Pro", page_icon="📊", layout="wide")
-st.set_option("server.headless", True)
 
 st.title("📊 特肖预测系统 Pro")
 st.caption("上传历史数据，训练模型，并预测下一期 Top4 特肖")
