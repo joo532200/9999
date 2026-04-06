@@ -445,9 +445,6 @@ def simple_backtest_score(df_features, feature_cols, zodiac_encoder, window_size
 def find_best_dynamic_config(df_features, feature_cols, zodiac_encoder, eval_last_n=30):
     candidate_windows = [80, 100, 120, 150]
     candidate_weights = [
-        (0.7, 0.3),
-        (0.6, 0.4),
-        (0.5, 0.5),
         (0.0, 1.0),
     ]
 
